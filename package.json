@@ -1,0 +1,31 @@
+{
+  "name": "puppeteer-mcp",
+  "version": "1.0.0",
+  "description": "An MCP server for Google Gemini CLI to control the browser using Puppeteer",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CCTA69/CCTA.git"
+  },
+  "keywords": ["mcp", "puppeteer", "browser", "automation"],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CCTA69/CCTA/issues"
+  },
+  "homepage": "https://github.com/CCTA69/CCTA#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "puppeteer": "^24.41.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}
