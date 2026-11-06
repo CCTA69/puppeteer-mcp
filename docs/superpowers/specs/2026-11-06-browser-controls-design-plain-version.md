@@ -4,7 +4,7 @@ Make your free browser tool more useful and dependable while keeping existing co
 
 [Technical Version](2026-11-06-browser-controls-design.md)
 
-Status: proposed design, awaiting your review. No code has changed and no tests have run.
+Status: you approved this design on 6 November 2026 and reaffirmed reliability as the priority. No product code has changed and no tests have run. The implementation plan is the next review step.
 
 ## D1 — Improve what is already there
 

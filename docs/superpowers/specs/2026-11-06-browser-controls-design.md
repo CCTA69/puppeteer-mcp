@@ -1,6 +1,6 @@
 # Browser controls upgrade design
 
-Status: proposed; design approval pending. No implementation or tests have run.
+Status: approved on 2026-11-06 in response to the presented design pair: "ok make sure that it is bug prof that is the bottom-line". Reliability remains a release requirement. No implementation or tests have run; implementation-plan approval is pending.
 
 [Plain Version](2026-11-06-browser-controls-design-plain-version.md)
 
