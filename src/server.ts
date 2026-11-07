@@ -34,7 +34,7 @@ export function createServer(session: BrowserSession): McpServer {
         if (name === 'switch_tab') return jsonResult({...await session.switchTab(schemas.switch_tab.parse(args).tab_id)});
         if (name === 'close_tab') { await session.closeTab(schemas.close_tab.parse(args).tab_id); return jsonResult({status:'Tab closed'}); }
         const action = { ...schemas[name].parse(args), name } as PageAction;
-        return await session.withPage({tabId:action.tab_id, timeoutMs:action.timeout_ms}, (page,signal) => performPageAction(page, action, signal));
+        return await session.withPage({tabId:action.tab_id, timeoutMs:action.timeout_ms}, (page,signal,tabId) => performPageAction(page, action, signal,tabId));
       } catch (error) { return toolError(error instanceof SessionError ? error.code : 'failed'); }
     });
   }

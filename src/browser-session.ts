@@ -153,8 +153,8 @@ export class BrowserSession {
     if (!page) { page = await browser.newPage(); ctx.signal.throwIfAborted(); this.active=this.register(page); }
     ctx.page=page; return page;
   }
-  withPage<T>(options: {tabId?: string; timeoutMs: number}, operation: (page: Page, signal: AbortSignal) => Promise<T>): Promise<T> {
-    return this.enqueue(options.timeoutMs, async ctx => { const page = await this.pageFor(options.tabId,ctx); ctx.signal.throwIfAborted(); return operation(page,ctx.signal); });
+  withPage<T>(options: {tabId?: string; timeoutMs: number}, operation: (page: Page, signal: AbortSignal, tabId:string) => Promise<T>): Promise<T> {
+    return this.enqueue(options.timeoutMs, async ctx => { const page = await this.pageFor(options.tabId,ctx); ctx.signal.throwIfAborted(); return operation(page,ctx.signal,this.register(page)); });
   }
   private async info(id: string, page: Page): Promise<TabInfo> {
     return {id, title: await page.title().catch(()=>''), url:page.url(), active:this.active===id};

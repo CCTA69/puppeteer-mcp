@@ -248,7 +248,7 @@ export class BrowserSession {
         return page;
     }
     withPage(options, operation) {
-        return this.enqueue(options.timeoutMs, async (ctx) => { const page = await this.pageFor(options.tabId, ctx); ctx.signal.throwIfAborted(); return operation(page, ctx.signal); });
+        return this.enqueue(options.timeoutMs, async (ctx) => { const page = await this.pageFor(options.tabId, ctx); ctx.signal.throwIfAborted(); return operation(page, ctx.signal, this.register(page)); });
     }
     async info(id, page) {
         return { id, title: await page.title().catch(() => ''), url: page.url(), active: this.active === id };

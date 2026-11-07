@@ -43,7 +43,7 @@ export function createServer(session) {
                     return jsonResult({ status: 'Tab closed' });
                 }
                 const action = { ...schemas[name].parse(args), name };
-                return await session.withPage({ tabId: action.tab_id, timeoutMs: action.timeout_ms }, (page, signal) => performPageAction(page, action, signal));
+                return await session.withPage({ tabId: action.tab_id, timeoutMs: action.timeout_ms }, (page, signal, tabId) => performPageAction(page, action, signal, tabId));
             }
             catch (error) {
                 return toolError(error instanceof SessionError ? error.code : 'failed');

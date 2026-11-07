@@ -22,6 +22,7 @@ export const schemas = {
     select_option: z.strictObject({ ...page, selector, values: z.array(z.string().max(4096)).min(1).max(100) }),
     press_key: z.strictObject({ ...page, selector: selector.optional(), key: z.enum(Object.keys(_keyDefinitions)) }),
     wait_for: z.strictObject({ ...page, selector, state: z.enum(['visible', 'hidden', 'attached', 'detached']).default('visible') }),
+    screenshot: z.strictObject({ ...page, selector: selector.optional(), full_page: z.boolean().optional() }).refine(a => !(a.selector && a.full_page), 'Choose a selector or full_page, not both.'),
     type: z.strictObject({ ...page, selector, text }),
     get_content: z.strictObject({ ...page, selector: selector.optional(), max_chars }),
     evaluate: z.strictObject({ ...page, script: text, max_chars }),

@@ -2,9 +2,11 @@ import type { Page } from 'puppeteer';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { PageAction } from './tool-schemas.js';
 import { jsonResult, textResult, valueResult, SessionError } from './results.js';
-export async function performPageAction(page: Page, action: PageAction, signal: AbortSignal): Promise<CallToolResult> {
+import { capture } from './screenshot.js';
+export async function performPageAction(page: Page, action: PageAction, signal: AbortSignal, tabId?: string): Promise<CallToolResult> {
   signal.throwIfAborted();
   switch (action.name) {
+    case 'screenshot': return capture(page,action,signal,tabId);
     case 'navigate': await page.goto(action.url, { waitUntil:action.wait_until, timeout:0, signal }); return jsonResult({status:'Navigated'});
     case 'click': {
       const end = new AbortController();

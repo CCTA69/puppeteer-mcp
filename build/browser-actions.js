@@ -51,9 +51,11 @@ var __disposeResources = (this && this.__disposeResources) || (function (Suppres
     return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
 });
 import { jsonResult, textResult, valueResult, SessionError } from './results.js';
-export async function performPageAction(page, action, signal) {
+import { capture } from './screenshot.js';
+export async function performPageAction(page, action, signal, tabId) {
     signal.throwIfAborted();
     switch (action.name) {
+        case 'screenshot': return capture(page, action, signal, tabId);
         case 'navigate':
             await page.goto(action.url, { waitUntil: action.wait_until, timeout: 0, signal });
             return jsonResult({ status: 'Navigated' });
