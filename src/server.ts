@@ -82,33 +82,37 @@ export function createServer(session: BrowserSession): McpServer {
           openWorldHint: true,
         },
       },
-      async (args: unknown) => {
+      async (args: unknown, { signal }: { signal: AbortSignal }) => {
         try {
           if (name === "close_browser") {
-            await session.closeBrowser();
+            await session.closeBrowser(signal);
             return jsonResult({ status: "Browser closed" });
           }
           if (name === "list_tabs")
-            return jsonResult({ tabs: await session.listTabs() });
+            return jsonResult({ tabs: await session.listTabs(signal) });
           if (name === "new_tab") {
             const a = schemas.new_tab.parse(args);
             return jsonResult({
-              ...(await session.newTab(a.url, a.timeout_ms)),
+              ...(await session.newTab(a.url, a.timeout_ms, signal)),
             });
           }
           if (name === "switch_tab")
             return jsonResult({
               ...(await session.switchTab(
                 schemas.switch_tab.parse(args).tab_id,
+                signal,
               )),
             });
           if (name === "close_tab") {
-            await session.closeTab(schemas.close_tab.parse(args).tab_id);
+            await session.closeTab(
+              schemas.close_tab.parse(args).tab_id,
+              signal,
+            );
             return jsonResult({ status: "Tab closed" });
           }
           const action = { ...schemas[name].parse(args), name } as PageAction;
           return await session.withPage(
-            { tabId: action.tab_id, timeoutMs: action.timeout_ms },
+            { tabId: action.tab_id, timeoutMs: action.timeout_ms, signal },
             (page, signal, tabId) =>
               performPageAction(page, action, signal, tabId),
           );

@@ -9,12 +9,12 @@ export const text = (result) =>
     .join("\n");
 export const call = (client, name, args = {}) =>
   client.callTool({ name, arguments: args });
-export async function startClient() {
+export async function startClient(env = {}) {
   let errors = "";
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["build/index.js"],
-    env: { ...process.env, PUPPETEER_MCP_HEADLESS: "true" },
+    env: { ...process.env, PUPPETEER_MCP_HEADLESS: "true", ...env },
     stderr: "pipe",
   });
   transport.stderr?.on("data", (chunk) => {

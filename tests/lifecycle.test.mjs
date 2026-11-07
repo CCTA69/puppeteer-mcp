@@ -23,7 +23,7 @@ async function until(fn, ms = 8000) {
     await delay(25);
   }
 }
-for (const mode of ["EOF", "fatal"]) {
+for (const mode of ["EOF", "fatal", "SIGINT", "SIGTERM"]) {
   test(
     mode + " reaps the owned browser and exits without leaking diagnostics",
     async (t) => {
@@ -60,10 +60,13 @@ for (const mode of ["EOF", "fatal"]) {
       await until(() => ownedPid && stdout.includes('"id":2'));
       assert.ok(alive(ownedPid));
       if (mode === "EOF") child.stdin.end();
-      else child.send("test-fatal");
+      else if (mode === "fatal") child.send("test-fatal");
+      else if (process.platform === "win32")
+        child.send(mode); // Windows kill() is forcible, not POSIX signal delivery.
+      else child.kill(mode);
       await until(() => child.exitCode !== null || child.signalCode !== null);
       const [code] = await exited;
-      assert.equal(code, mode === "EOF" ? 0 : 1);
+      assert.equal(code, mode === "fatal" ? 1 : 0);
       await until(() => !alive(ownedPid));
       assert.equal(stderr.includes("PRIVATE_FATAL_SAMPLE_713"), false);
       assert.ok(

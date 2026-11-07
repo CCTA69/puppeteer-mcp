@@ -7,6 +7,7 @@ puppeteer.launch = async (options) => {
   return browser;
 };
 process.on("message", (message) => {
+  if (message === "SIGINT" || message === "SIGTERM") process.emit(message);
   if (message === "test-fatal")
     queueMicrotask(() => {
       throw new Error("PRIVATE_FATAL_SAMPLE_713");

@@ -52,6 +52,35 @@ var __disposeResources = (this && this.__disposeResources) || (function (Suppres
 });
 import { jsonResult, textResult, valueResult, SessionError, } from "./results.js";
 import { capture } from "./screenshot.js";
+// Keyboard events go to the focused control, even if a requested focus failed.
+async function checkKeyboardTarget(element, focus, writable) {
+    const ready = await element.evaluate((el, focus, writable) => {
+        if (!(el instanceof HTMLElement) ||
+            !el.isConnected ||
+            el.matches(":disabled"))
+            return false;
+        if (writable &&
+            !(el.isContentEditable ||
+                (el instanceof HTMLTextAreaElement && !el.readOnly) ||
+                (el instanceof HTMLInputElement &&
+                    !el.readOnly &&
+                    [
+                        "text",
+                        "search",
+                        "tel",
+                        "url",
+                        "email",
+                        "password",
+                        "number",
+                    ].includes(el.type))))
+            return false;
+        if (focus)
+            el.focus();
+        return el.getRootNode().activeElement === el;
+    }, focus, writable);
+    if (!ready)
+        throw new SessionError("failed");
+}
 export async function performPageAction(page, action, signal, tabId) {
     signal.throwIfAborted();
     switch (action.name) {
@@ -65,61 +94,140 @@ export async function performPageAction(page, action, signal, tabId) {
             });
             return jsonResult({ status: "Navigated" });
         case "click": {
-            const end = new AbortController();
-            const clickSignal = AbortSignal.any([signal, end.signal]);
-            const navigation = action.wait_until
-                ? page.waitForNavigation({
-                    waitUntil: action.wait_until,
-                    timeout: 0,
-                    signal: clickSignal,
-                })
-                : undefined;
-            try {
-                await Promise.all([
-                    navigation,
-                    page
-                        .locator(`:is(${action.selector}):not(:disabled)`)
-                        .setTimeout(0)
-                        .click({ signal: clickSignal }),
-                ]);
-            }
-            finally {
-                end.abort();
-                await navigation?.catch(() => { });
-            }
-            return jsonResult({ status: "Clicked" });
-        }
-        case "type": {
             const env_1 = { stack: [], error: void 0, hasError: false };
             try {
-                const element = __addDisposableResource(env_1, await page.waitForSelector(action.selector, {
-                    signal,
-                    timeout: 0,
-                }), false);
-                signal.throwIfAborted();
+                // Wait for a usable match, then send exactly one click. A locator may retry
+                // the dispatch itself after Chrome already processed the first one.
+                const element = __addDisposableResource(env_1, await page.waitForSelector(`:is(${action.selector}):not(:disabled)`, { visible: true, timeout: 0, signal }), true);
                 if (!element)
                     throw new SessionError("failed");
-                await element.type(action.text);
-                return jsonResult({ status: "Typed" });
+                signal.throwIfAborted();
+                const end = new AbortController();
+                const clickSignal = AbortSignal.any([signal, end.signal]);
+                const navigation = action.wait_until
+                    ? page.waitForNavigation({
+                        waitUntil: action.wait_until,
+                        timeout: 0,
+                        signal: clickSignal,
+                    })
+                    : undefined;
+                try {
+                    await Promise.all([navigation, element.click()]);
+                }
+                finally {
+                    end.abort();
+                    await navigation?.catch(() => { });
+                }
+                return jsonResult({ status: "Clicked" });
             }
             catch (e_1) {
                 env_1.error = e_1;
                 env_1.hasError = true;
             }
             finally {
-                __disposeResources(env_1);
+                const result_1 = __disposeResources(env_1);
+                if (result_1)
+                    await result_1;
             }
         }
-        case "fill":
-            await page
-                .locator(`:is(${action.selector}):not(:disabled)`)
-                .setTimeout(0)
-                .fill(action.text, { signal });
-            return jsonResult({ status: "Filled" });
-        case "select_option": {
+        case "type": {
             const env_2 = { stack: [], error: void 0, hasError: false };
             try {
                 const element = __addDisposableResource(env_2, await page.waitForSelector(action.selector, {
+                    signal,
+                    timeout: 0,
+                }), false);
+                signal.throwIfAborted();
+                if (!element)
+                    throw new SessionError("failed");
+                await checkKeyboardTarget(element, true, true);
+                for (const character of action.text) {
+                    await checkKeyboardTarget(element, false, true);
+                    signal.throwIfAborted();
+                    await page.keyboard.type(character);
+                }
+                return jsonResult({ status: "Typed" });
+            }
+            catch (e_2) {
+                env_2.error = e_2;
+                env_2.hasError = true;
+            }
+            finally {
+                __disposeResources(env_2);
+            }
+        }
+        case "fill": {
+            const env_3 = { stack: [], error: void 0, hasError: false };
+            try {
+                const element = __addDisposableResource(env_3, await page.waitForSelector(`:is(${action.selector}):not(:disabled)`, { visible: true, timeout: 0, signal }), true);
+                if (!element)
+                    throw new SessionError("failed");
+                signal.throwIfAborted();
+                // Apply one replacement and notify the form even when the new value is empty.
+                const applied = await element.evaluate((el, text) => {
+                    if (!(el instanceof HTMLElement) ||
+                        !el.isConnected ||
+                        el.matches(":disabled"))
+                        return false;
+                    if (el instanceof HTMLInputElement ||
+                        el instanceof HTMLTextAreaElement) {
+                        if (el.readOnly ||
+                            (el instanceof HTMLInputElement &&
+                                ![
+                                    "text",
+                                    "search",
+                                    "tel",
+                                    "url",
+                                    "email",
+                                    "password",
+                                    "number",
+                                    "date",
+                                    "month",
+                                    "week",
+                                    "time",
+                                    "datetime-local",
+                                ].includes(el.type)))
+                            return false;
+                        if (el.value === text)
+                            return true;
+                        const probe = el.cloneNode(false);
+                        probe.value = text;
+                        if (probe.value !== text)
+                            return false;
+                        const proto = el instanceof HTMLInputElement
+                            ? HTMLInputElement.prototype
+                            : HTMLTextAreaElement.prototype;
+                        Object.getOwnPropertyDescriptor(proto, "value").set.call(el, text);
+                    }
+                    else if (el.isContentEditable) {
+                        if (el.innerText === text)
+                            return true;
+                        el.innerText = text;
+                    }
+                    else
+                        return false;
+                    el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    el.dispatchEvent(new Event("change", { bubbles: true }));
+                    return true;
+                }, action.text);
+                if (!applied)
+                    throw new SessionError("failed");
+                return jsonResult({ status: "Filled" });
+            }
+            catch (e_3) {
+                env_3.error = e_3;
+                env_3.hasError = true;
+            }
+            finally {
+                const result_2 = __disposeResources(env_3);
+                if (result_2)
+                    await result_2;
+            }
+        }
+        case "select_option": {
+            const env_4 = { stack: [], error: void 0, hasError: false };
+            try {
+                const element = __addDisposableResource(env_4, await page.waitForSelector(action.selector, {
                     signal,
                     timeout: 0,
                 }), false);
@@ -135,62 +243,28 @@ export async function performPageAction(page, action, signal, tabId) {
                     throw new SessionError("failed");
                 return jsonResult({ count: selected.length });
             }
-            catch (e_2) {
-                env_2.error = e_2;
-                env_2.hasError = true;
+            catch (e_4) {
+                env_4.error = e_4;
+                env_4.hasError = true;
             }
             finally {
-                __disposeResources(env_2);
+                __disposeResources(env_4);
             }
         }
         case "press_key": {
             if (action.selector) {
-                const env_3 = { stack: [], error: void 0, hasError: false };
+                const env_5 = { stack: [], error: void 0, hasError: false };
                 try {
-                    const element = __addDisposableResource(env_3, await page.waitForSelector(action.selector, {
+                    const element = __addDisposableResource(env_5, await page.waitForSelector(action.selector, {
                         signal,
                         timeout: 0,
                     }), false);
                     signal.throwIfAborted();
                     if (!element)
                         throw new SessionError("failed");
-                    await element.press(action.key);
-                }
-                catch (e_3) {
-                    env_3.error = e_3;
-                    env_3.hasError = true;
-                }
-                finally {
-                    __disposeResources(env_3);
-                }
-            }
-            else
-                await page.keyboard.press(action.key);
-            return jsonResult({ status: "Key pressed" });
-        }
-        case "wait_for": {
-            if (action.state === "detached") {
-                const env_4 = { stack: [], error: void 0, hasError: false };
-                try {
-                    const handle = __addDisposableResource(env_4, await page.waitForFunction((sel) => !document.querySelector(sel), { timeout: 0, signal }, action.selector), false);
-                }
-                catch (e_4) {
-                    env_4.error = e_4;
-                    env_4.hasError = true;
-                }
-                finally {
-                    __disposeResources(env_4);
-                }
-            }
-            else {
-                const env_5 = { stack: [], error: void 0, hasError: false };
-                try {
-                    const handle = __addDisposableResource(env_5, await page.waitForSelector(action.selector, {
-                        timeout: 0,
-                        signal,
-                        visible: action.state === "visible",
-                        hidden: action.state === "hidden",
-                    }), false);
+                    await checkKeyboardTarget(element, true, false);
+                    signal.throwIfAborted();
+                    await page.keyboard.press(action.key);
                 }
                 catch (e_5) {
                     env_5.error = e_5;
@@ -200,20 +274,15 @@ export async function performPageAction(page, action, signal, tabId) {
                     __disposeResources(env_5);
                 }
             }
-            return jsonResult({ state: action.state });
+            else
+                await page.keyboard.press(action.key);
+            return jsonResult({ status: "Key pressed" });
         }
-        case "get_content": {
-            if (action.selector) {
+        case "wait_for": {
+            if (action.state === "detached") {
                 const env_6 = { stack: [], error: void 0, hasError: false };
                 try {
-                    const el = __addDisposableResource(env_6, await page.waitForSelector(action.selector, {
-                        signal,
-                        timeout: 0,
-                    }), false);
-                    if (!el)
-                        throw new SessionError("failed");
-                    signal.throwIfAborted();
-                    return textResult(await el.evaluate((e) => e.outerHTML), action.max_chars);
+                    const handle = __addDisposableResource(env_6, await page.waitForFunction((sel) => !document.querySelector(sel), { timeout: 0, signal }, action.selector), false);
                 }
                 catch (e_6) {
                     env_6.error = e_6;
@@ -223,13 +292,54 @@ export async function performPageAction(page, action, signal, tabId) {
                     __disposeResources(env_6);
                 }
             }
+            else {
+                const env_7 = { stack: [], error: void 0, hasError: false };
+                try {
+                    const handle = __addDisposableResource(env_7, await page.waitForSelector(action.selector, {
+                        timeout: 0,
+                        signal,
+                        visible: action.state === "visible",
+                        hidden: action.state === "hidden",
+                    }), false);
+                }
+                catch (e_7) {
+                    env_7.error = e_7;
+                    env_7.hasError = true;
+                }
+                finally {
+                    __disposeResources(env_7);
+                }
+            }
+            return jsonResult({ state: action.state });
+        }
+        case "get_content": {
+            if (action.selector) {
+                const env_8 = { stack: [], error: void 0, hasError: false };
+                try {
+                    const el = __addDisposableResource(env_8, await page.waitForSelector(action.selector, {
+                        signal,
+                        timeout: 0,
+                    }), false);
+                    if (!el)
+                        throw new SessionError("failed");
+                    signal.throwIfAborted();
+                    return textResult(await el.evaluate((e) => e.outerHTML), action.max_chars);
+                }
+                catch (e_8) {
+                    env_8.error = e_8;
+                    env_8.hasError = true;
+                }
+                finally {
+                    __disposeResources(env_8);
+                }
+            }
             return textResult(await page.content(), action.max_chars);
         }
         case "evaluate": {
-            const env_7 = { stack: [], error: void 0, hasError: false };
+            const env_9 = { stack: [], error: void 0, hasError: false };
             try {
                 // A handle preserves the distinction between undefined and a value CDP cannot serialize.
-                const handle = __addDisposableResource(env_7, await page.evaluateHandle(action.script), true);
+                const handle = __addDisposableResource(env_9, await page.evaluateHandle(action.script), true);
                 signal.throwIfAborted();
                 const encoded = await handle.evaluate((value, limit) => {
                     if (value === undefined)
@@ -268,14 +378,14 @@ export async function performPageAction(page, action, signal, tabId) {
                     });
                 return valueResult(JSON.parse(encoded.json), action.max_chars);
             }
-            catch (e_7) {
-                env_7.error = e_7;
-                env_7.hasError = true;
+            catch (e_9) {
+                env_9.error = e_9;
+                env_9.hasError = true;
             }
             finally {
-                const result_1 = __disposeResources(env_7);
-                if (result_1)
-                    await result_1;
+                const result_3 = __disposeResources(env_9);
+                if (result_3)
+                    await result_3;
             }
         }
     }

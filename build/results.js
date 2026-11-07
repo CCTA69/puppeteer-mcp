@@ -1,4 +1,5 @@
 const messages = {
+    cancelled: "The client cancelled this command. Inspect the page before repeating an action.",
     invalid: "Invalid arguments. Check the tool schema and try again.",
     failed: "Browser operation failed. Check the page, selector and browser state before trying again.",
     timeout: "Operation timed out. Its page or browser was closed for recovery. Effects may already have occurred; inspect the state before another action.",

@@ -77,6 +77,7 @@ export class BrowserSession {
   private readonly disposing = new WeakMap<Browser, Promise<void>>();
   private readonly tabs = new Map<string, Page>();
   private active?: string;
+  private focusFallback = false;
   private sequence = 0;
   private generation = 0;
   private readonly queue: Job[] = [];
@@ -100,12 +101,18 @@ export class BrowserSession {
   private enqueue<T>(
     ms: number,
     run: (ctx: Operation) => Promise<T>,
+    clientSignal?: AbortSignal,
   ): Promise<T> {
+    if (clientSignal?.aborted)
+      return Promise.reject(new SessionError("cancelled"));
     if (this.broken || this.stopped)
       return Promise.reject(
         new SessionError(this.broken ? "unusable" : "stopped"),
       );
-    return new Promise((resolve, reject) => {
+    let detach = () => {};
+    return new Promise<T>((resolve, reject) => {
+      const controller = new AbortController();
+      const queueDeadline = performance.now() + ms;
       const job: Job = {
         reject,
         timer: setTimeout(() => {
@@ -117,7 +124,10 @@ export class BrowserSession {
         }, ms),
         start: async () => {
           clearTimeout(job.timer);
-          const controller = new AbortController();
+          if (performance.now() >= queueDeadline) {
+            reject(new SessionError("queued"));
+            return;
+          }
           this.current = controller;
           const ctx: Operation = { signal: controller.signal };
           const timer = setTimeout(
@@ -137,7 +147,7 @@ export class BrowserSession {
             if (
               controller.signal.aborted &&
               controller.signal.reason instanceof SessionError &&
-              controller.signal.reason.code === "timeout"
+              ["timeout", "cancelled"].includes(controller.signal.reason.code)
             ) {
               this.discardWaiting();
               try {
@@ -153,7 +163,7 @@ export class BrowserSession {
                     await this.reset();
                   }
                 }
-                reject(new SessionError("timeout"));
+                reject(controller.signal.reason);
               } catch {
                 this.broken = true;
                 reject(new SessionError("unusable"));
@@ -168,9 +178,20 @@ export class BrowserSession {
           }
         },
       };
+      const cancel = () => {
+        const reason = new SessionError("cancelled");
+        const i = this.queue.indexOf(job);
+        if (i >= 0) {
+          this.queue.splice(i, 1);
+          clearTimeout(job.timer);
+          reject(reason);
+        } else controller.abort(reason);
+      };
+      clientSignal?.addEventListener("abort", cancel, { once: true });
+      detach = () => clientSignal?.removeEventListener("abort", cancel);
       this.queue.push(job);
       void this.drain();
-    });
+    }).finally(() => detach());
   }
   private async drain(): Promise<void> {
     if (this.draining) return;
@@ -188,6 +209,7 @@ export class BrowserSession {
     }
   }
   private clearTabs(): void {
+    this.focusFallback = false;
     this.browser = undefined;
     this.generation++;
     this.tabs.clear();
@@ -227,6 +249,7 @@ export class BrowserSession {
     const launch =
       this.options.launch?.() ??
       puppeteer.launch({
+        logger: () => undefined,
         headless: this.options.headless,
         handleSIGINT: false,
         handleSIGTERM: false,
@@ -264,7 +287,10 @@ export class BrowserSession {
     this.active ??= id;
     page.once("close", () => {
       this.tabs.delete(id);
-      if (this.active === id) this.active = this.tabs.keys().next().value;
+      if (this.active === id) {
+        this.active = this.tabs.keys().next().value;
+        this.focusFallback = true;
+      }
     });
     return id;
   }
@@ -274,8 +300,16 @@ export class BrowserSession {
     if (browser !== this.browser) throw new SessionError("stopped");
     for (const page of pages) if (!page.isClosed()) this.register(page);
     for (const [id, p] of this.tabs) if (p.isClosed()) this.tabs.delete(id);
-    if (!this.active || !this.tabs.has(this.active))
+    if (!this.active || !this.tabs.has(this.active)) {
       this.active = this.tabs.keys().next().value;
+      this.focusFallback = true;
+    }
+    if (this.active && this.focusFallback) {
+      const next = this.tabs.get(this.active);
+      await next?.bringToFront();
+      ctx.signal.throwIfAborted();
+      this.focusFallback = false;
+    }
   }
   private async pageFor(id: string | undefined, ctx: Operation): Promise<Page> {
     if (id !== undefined && !this.browser?.connected)
@@ -293,14 +327,31 @@ export class BrowserSession {
     return page;
   }
   withPage<T>(
-    options: { tabId?: string; timeoutMs: number },
+    options: { tabId?: string; timeoutMs: number; signal?: AbortSignal },
     operation: (page: Page, signal: AbortSignal, tabId: string) => Promise<T>,
   ): Promise<T> {
-    return this.enqueue(options.timeoutMs, async (ctx) => {
-      const page = await this.pageFor(options.tabId, ctx);
-      ctx.signal.throwIfAborted();
-      return operation(page, ctx.signal, this.register(page));
-    });
+    return this.enqueue(
+      options.timeoutMs,
+      async (ctx) => {
+        const page = await this.pageFor(options.tabId, ctx);
+        ctx.signal.throwIfAborted();
+        const active = this.active && this.tabs.get(this.active);
+        await page.bringToFront();
+        ctx.signal.throwIfAborted();
+        try {
+          return await operation(page, ctx.signal, this.register(page));
+        } finally {
+          if (
+            !ctx.signal.aborted &&
+            active &&
+            active !== page &&
+            !active.isClosed()
+          )
+            await active.bringToFront();
+        }
+      },
+      options.signal,
+    );
   }
   private async info(id: string, page: Page): Promise<TabInfo> {
     return {
@@ -310,67 +361,88 @@ export class BrowserSession {
       active: this.active === id,
     };
   }
-  listTabs(): Promise<TabInfo[]> {
-    return this.enqueue(DEFAULT_MS, async (ctx) => {
-      if (!this.browser?.connected) return [];
-      await this.syncTabs(this.browser, ctx);
-      return Promise.all(
-        Array.from(this.tabs, ([id, page]) => this.info(id, page)),
-      );
-    });
+  listTabs(signal?: AbortSignal): Promise<TabInfo[]> {
+    return this.enqueue(
+      DEFAULT_MS,
+      async (ctx) => {
+        if (!this.browser?.connected) return [];
+        await this.syncTabs(this.browser, ctx);
+        return Promise.all(
+          Array.from(this.tabs, ([id, page]) => this.info(id, page)),
+        );
+      },
+      signal,
+    );
   }
-  newTab(url?: string, timeoutMs = DEFAULT_MS): Promise<TabInfo> {
-    return this.enqueue(timeoutMs, async (ctx) => {
-      const alreadyOpen = !!this.browser?.connected;
-      const browser = await this.ensureBrowser(ctx);
-      const previous = this.active;
-      const initial =
-        !alreadyOpen && this.tabs.size === 1
-          ? this.tabs.values().next().value
-          : undefined;
-      const page =
-        initial?.url() === "about:blank" ? initial : await browser.newPage();
-      ctx.signal.throwIfAborted();
-      ctx.page = page;
-      const id = this.register(page);
-      try {
-        if (url)
-          await page.goto(url, {
-            waitUntil: "domcontentloaded",
-            timeout: 0,
-            signal: ctx.signal,
-          });
+  newTab(
+    url?: string,
+    timeoutMs = DEFAULT_MS,
+    signal?: AbortSignal,
+  ): Promise<TabInfo> {
+    return this.enqueue(
+      timeoutMs,
+      async (ctx) => {
+        const alreadyOpen = !!this.browser?.connected;
+        const browser = await this.ensureBrowser(ctx);
+        const previous = this.active;
+        const initial =
+          !alreadyOpen && this.tabs.size === 1
+            ? this.tabs.values().next().value
+            : undefined;
+        const page =
+          initial?.url() === "about:blank" ? initial : await browser.newPage();
         ctx.signal.throwIfAborted();
-        await page.bringToFront();
+        ctx.page = page;
+        const id = this.register(page);
+        try {
+          if (url)
+            await page.goto(url, {
+              waitUntil: "domcontentloaded",
+              timeout: 0,
+              signal: ctx.signal,
+            });
+          ctx.signal.throwIfAborted();
+          await page.bringToFront();
+          ctx.signal.throwIfAborted();
+          this.active = id;
+          return await this.info(id, page);
+        } catch (err) {
+          if (!ctx.signal.aborted) {
+            await page.close();
+            if (previous && this.tabs.has(previous)) this.active = previous;
+          }
+          throw err;
+        }
+      },
+      signal,
+    );
+  }
+  switchTab(id: string, signal?: AbortSignal): Promise<TabInfo> {
+    return this.enqueue(
+      DEFAULT_MS,
+      async (ctx) => {
+        const p = await this.pageFor(id, ctx);
+        await p.bringToFront();
         ctx.signal.throwIfAborted();
         this.active = id;
-        return await this.info(id, page);
-      } catch (err) {
-        if (!ctx.signal.aborted) {
-          await page.close();
-          if (previous && this.tabs.has(previous)) this.active = previous;
-        }
-        throw err;
-      }
-    });
+        return this.info(id, p);
+      },
+      signal,
+    );
   }
-  switchTab(id: string): Promise<TabInfo> {
-    return this.enqueue(DEFAULT_MS, async (ctx) => {
-      const p = await this.pageFor(id, ctx);
-      await p.bringToFront();
-      ctx.signal.throwIfAborted();
-      this.active = id;
-      return this.info(id, p);
-    });
+  closeTab(id: string, signal?: AbortSignal): Promise<void> {
+    return this.enqueue(
+      DEFAULT_MS,
+      async (ctx) => {
+        const p = await this.pageFor(id, ctx);
+        await p.close();
+        if (this.browser?.connected) await this.syncTabs(this.browser, ctx);
+      },
+      signal,
+    );
   }
-  closeTab(id: string): Promise<void> {
-    return this.enqueue(DEFAULT_MS, async (ctx) => {
-      const p = await this.pageFor(id, ctx);
-      await p.close();
-    });
-  }
-  closeBrowser(): Promise<void> {
-    return this.enqueue(DEFAULT_MS, () => this.reset());
+  closeBrowser(signal?: AbortSignal): Promise<void> {
+    return this.enqueue(DEFAULT_MS, () => this.reset(), signal);
   }
   shutdown(): Promise<void> {
     if (this.closing) return this.closing;

@@ -1,4 +1,4 @@
-import type { Page } from "puppeteer";
+import type { ElementHandle, Page } from "puppeteer";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { PageAction } from "./tool-schemas.js";
 import {
@@ -8,6 +8,47 @@ import {
   SessionError,
 } from "./results.js";
 import { capture } from "./screenshot.js";
+// Keyboard events go to the focused control, even if a requested focus failed.
+async function checkKeyboardTarget(
+  element: ElementHandle<Element>,
+  focus: boolean,
+  writable: boolean,
+): Promise<void> {
+  const ready = await element.evaluate(
+    (el, focus, writable) => {
+      if (
+        !(el instanceof HTMLElement) ||
+        !el.isConnected ||
+        el.matches(":disabled")
+      )
+        return false;
+      if (
+        writable &&
+        !(
+          el.isContentEditable ||
+          (el instanceof HTMLTextAreaElement && !el.readOnly) ||
+          (el instanceof HTMLInputElement &&
+            !el.readOnly &&
+            [
+              "text",
+              "search",
+              "tel",
+              "url",
+              "email",
+              "password",
+              "number",
+            ].includes(el.type))
+        )
+      )
+        return false;
+      if (focus) el.focus();
+      return (el.getRootNode() as Document | ShadowRoot).activeElement === el;
+    },
+    focus,
+    writable,
+  );
+  if (!ready) throw new SessionError("failed");
+}
 export async function performPageAction(
   page: Page,
   action: PageAction,
@@ -26,6 +67,14 @@ export async function performPageAction(
       });
       return jsonResult({ status: "Navigated" });
     case "click": {
+      // Wait for a usable match, then send exactly one click. A locator may retry
+      // the dispatch itself after Chrome already processed the first one.
+      await using element = await page.waitForSelector(
+        `:is(${action.selector}):not(:disabled)`,
+        { visible: true, timeout: 0, signal },
+      );
+      if (!element) throw new SessionError("failed");
+      signal.throwIfAborted();
       const end = new AbortController();
       const clickSignal = AbortSignal.any([signal, end.signal]);
       const navigation = action.wait_until
@@ -36,13 +85,7 @@ export async function performPageAction(
           })
         : undefined;
       try {
-        await Promise.all([
-          navigation,
-          page
-            .locator(`:is(${action.selector}):not(:disabled)`)
-            .setTimeout(0)
-            .click({ signal: clickSignal }),
-        ]);
+        await Promise.all([navigation, element.click()]);
       } finally {
         end.abort();
         await navigation?.catch(() => {});
@@ -56,15 +99,74 @@ export async function performPageAction(
       });
       signal.throwIfAborted();
       if (!element) throw new SessionError("failed");
-      await element.type(action.text);
+      await checkKeyboardTarget(element, true, true);
+      for (const character of action.text) {
+        await checkKeyboardTarget(element, false, true);
+        signal.throwIfAborted();
+        await page.keyboard.type(character);
+      }
       return jsonResult({ status: "Typed" });
     }
-    case "fill":
-      await page
-        .locator(`:is(${action.selector}):not(:disabled)`)
-        .setTimeout(0)
-        .fill(action.text, { signal });
+    case "fill": {
+      await using element = await page.waitForSelector(
+        `:is(${action.selector}):not(:disabled)`,
+        { visible: true, timeout: 0, signal },
+      );
+      if (!element) throw new SessionError("failed");
+      signal.throwIfAborted();
+      // Apply one replacement and notify the form even when the new value is empty.
+      const applied = await element.evaluate((el, text) => {
+        if (
+          !(el instanceof HTMLElement) ||
+          !el.isConnected ||
+          el.matches(":disabled")
+        )
+          return false;
+        if (
+          el instanceof HTMLInputElement ||
+          el instanceof HTMLTextAreaElement
+        ) {
+          if (
+            el.readOnly ||
+            (el instanceof HTMLInputElement &&
+              ![
+                "text",
+                "search",
+                "tel",
+                "url",
+                "email",
+                "password",
+                "number",
+                "date",
+                "month",
+                "week",
+                "time",
+                "datetime-local",
+              ].includes(el.type))
+          )
+            return false;
+          if (el.value === text) return true;
+          const probe = el.cloneNode(false) as
+            | HTMLInputElement
+            | HTMLTextAreaElement;
+          probe.value = text;
+          if (probe.value !== text) return false;
+          const proto =
+            el instanceof HTMLInputElement
+              ? HTMLInputElement.prototype
+              : HTMLTextAreaElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, text);
+        } else if (el.isContentEditable) {
+          if (el.innerText === text) return true;
+          el.innerText = text;
+        } else return false;
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }, action.text);
+      if (!applied) throw new SessionError("failed");
       return jsonResult({ status: "Filled" });
+    }
     case "select_option": {
       using element = await page.waitForSelector(action.selector, {
         signal,
@@ -98,7 +200,9 @@ export async function performPageAction(
         });
         signal.throwIfAborted();
         if (!element) throw new SessionError("failed");
-        await element.press(action.key);
+        await checkKeyboardTarget(element, true, false);
+        signal.throwIfAborted();
+        await page.keyboard.press(action.key);
       } else await page.keyboard.press(action.key);
       return jsonResult({ status: "Key pressed" });
     }

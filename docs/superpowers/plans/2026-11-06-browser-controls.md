@@ -1,18 +1,18 @@
 # Browser Controls Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Native execution with one independent final review is recommended; execution choice and plan approval are pending.
+> The original implementation checklist is retained below. See the [verification report](2026-11-06-browser-controls-verification.md) for completed work, review findings and test results.
 
 **Goal:** Add useful browser controls while preventing known failures from reaching a ready-for-use release.
 
 **Architecture:** Keep the existing local TypeScript/Puppeteer server and build/index.js entry point. Separate session ownership, tool registration and bounded response formatting; serialize actions through one session owner and invalidate uncertain browser state before accepting later work.
 
-**Tech Stack:** TypeScript, MCP SDK v1, Puppeteer 24, Zod 4, Node's built-in test runner with JavaScript ESM tests against compiled code.
+**Tech Stack:** TypeScript, MCP SDK v1, Puppeteer 25.16.0 (amendment A1), Zod 4, Node's built-in test runner with JavaScript ESM tests against compiled code.
 
 **Spec:** [Approved design](../specs/2026-11-06-browser-controls-design.md)
 
 **Plain Version:** [Implementation plan in everyday language](2026-11-06-browser-controls-plain-version.md)
 
-**Status:** Approved 2026-11-06: user chose native implementation with independent final review. Implementation underway; dependency amendment A1 below approved.
+**Status:** Implemented and verified locally on 2026-11-07, including the approved dependency amendment A1. Independent review findings were fixed and tested; remote CI has not run.
 
 ### A1 — Approved dependency amendment
 

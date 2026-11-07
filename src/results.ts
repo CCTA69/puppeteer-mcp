@@ -1,5 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 const messages = {
+  cancelled:
+    "The client cancelled this command. Inspect the page before repeating an action.",
   invalid: "Invalid arguments. Check the tool schema and try again.",
   failed:
     "Browser operation failed. Check the page, selector and browser state before trying again.",

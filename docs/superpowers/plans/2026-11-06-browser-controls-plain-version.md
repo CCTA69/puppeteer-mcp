@@ -4,7 +4,7 @@ Upgrade the browser tool, test its failure cases, and hold back any ready-for-us
 
 [Technical Version](2026-11-06-browser-controls.md)
 
-You approved this plan on 6 November 2026, with implementation here and an independent final review. Work has started. You also approved the major browser library upgrade described below.
+You approved this plan on 6 November 2026, including implementation here, an independent review, and the browser library upgrade below. The work is complete locally. The [verification report](2026-11-06-browser-controls-verification.md) lists what the reviewer found, how the fixes were tested, and what remains unverified.
 
 ### A1 — Approved dependency change
 

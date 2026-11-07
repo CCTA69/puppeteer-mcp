@@ -57,6 +57,7 @@ export class BrowserSession {
     disposing = new WeakMap();
     tabs = new Map();
     active;
+    focusFallback = false;
     sequence = 0;
     generation = 0;
     queue = [];
@@ -75,10 +76,15 @@ export class BrowserSession {
             job.reject(new SessionError("stopped"));
         }
     }
-    enqueue(ms, run) {
+    enqueue(ms, run, clientSignal) {
+        if (clientSignal?.aborted)
+            return Promise.reject(new SessionError("cancelled"));
         if (this.broken || this.stopped)
             return Promise.reject(new SessionError(this.broken ? "unusable" : "stopped"));
+        let detach = () => { };
         return new Promise((resolve, reject) => {
+            const controller = new AbortController();
+            const queueDeadline = performance.now() + ms;
             const job = {
                 reject,
                 timer: setTimeout(() => {
@@ -90,7 +96,10 @@ export class BrowserSession {
                 }, ms),
                 start: async () => {
                     clearTimeout(job.timer);
-                    const controller = new AbortController();
+                    if (performance.now() >= queueDeadline) {
+                        reject(new SessionError("queued"));
+                        return;
+                    }
                     this.current = controller;
                     const ctx = { signal: controller.signal };
                     const timer = setTimeout(() => controller.abort(new SessionError("timeout")), ms);
@@ -107,7 +116,7 @@ export class BrowserSession {
                     catch (err) {
                         if (controller.signal.aborted &&
                             controller.signal.reason instanceof SessionError &&
-                            controller.signal.reason.code === "timeout") {
+                            ["timeout", "cancelled"].includes(controller.signal.reason.code)) {
                             this.discardWaiting();
                             try {
                                 if (!ctx.page || ctx.page.isClosed()) {
@@ -122,7 +131,7 @@ export class BrowserSession {
                                         await this.reset();
                                     }
                                 }
-                                reject(new SessionError("timeout"));
+                                reject(controller.signal.reason);
                             }
                             catch {
                                 this.broken = true;
@@ -140,9 +149,22 @@ export class BrowserSession {
                     }
                 },
             };
+            const cancel = () => {
+                const reason = new SessionError("cancelled");
+                const i = this.queue.indexOf(job);
+                if (i >= 0) {
+                    this.queue.splice(i, 1);
+                    clearTimeout(job.timer);
+                    reject(reason);
+                }
+                else
+                    controller.abort(reason);
+            };
+            clientSignal?.addEventListener("abort", cancel, { once: true });
+            detach = () => clientSignal?.removeEventListener("abort", cancel);
             this.queue.push(job);
             void this.drain();
-        });
+        }).finally(() => detach());
     }
     async drain() {
         if (this.draining)
@@ -162,6 +184,7 @@ export class BrowserSession {
         }
     }
     clearTabs() {
+        this.focusFallback = false;
         this.browser = undefined;
         this.generation++;
         this.tabs.clear();
@@ -206,6 +229,7 @@ export class BrowserSession {
         const generation = ++this.generation;
         const launch = this.options.launch?.() ??
             puppeteer.launch({
+                logger: () => undefined,
                 headless: this.options.headless,
                 handleSIGINT: false,
                 handleSIGTERM: false,
@@ -246,8 +270,10 @@ export class BrowserSession {
         this.active ??= id;
         page.once("close", () => {
             this.tabs.delete(id);
-            if (this.active === id)
+            if (this.active === id) {
                 this.active = this.tabs.keys().next().value;
+                this.focusFallback = true;
+            }
         });
         return id;
     }
@@ -262,8 +288,16 @@ export class BrowserSession {
         for (const [id, p] of this.tabs)
             if (p.isClosed())
                 this.tabs.delete(id);
-        if (!this.active || !this.tabs.has(this.active))
+        if (!this.active || !this.tabs.has(this.active)) {
             this.active = this.tabs.keys().next().value;
+            this.focusFallback = true;
+        }
+        if (this.active && this.focusFallback) {
+            const next = this.tabs.get(this.active);
+            await next?.bringToFront();
+            ctx.signal.throwIfAborted();
+            this.focusFallback = false;
+        }
     }
     async pageFor(id, ctx) {
         if (id !== undefined && !this.browser?.connected)
@@ -285,8 +319,20 @@ export class BrowserSession {
         return this.enqueue(options.timeoutMs, async (ctx) => {
             const page = await this.pageFor(options.tabId, ctx);
             ctx.signal.throwIfAborted();
-            return operation(page, ctx.signal, this.register(page));
-        });
+            const active = this.active && this.tabs.get(this.active);
+            await page.bringToFront();
+            ctx.signal.throwIfAborted();
+            try {
+                return await operation(page, ctx.signal, this.register(page));
+            }
+            finally {
+                if (!ctx.signal.aborted &&
+                    active &&
+                    active !== page &&
+                    !active.isClosed())
+                    await active.bringToFront();
+            }
+        }, options.signal);
     }
     async info(id, page) {
         return {
@@ -296,15 +342,15 @@ export class BrowserSession {
             active: this.active === id,
         };
     }
-    listTabs() {
+    listTabs(signal) {
         return this.enqueue(DEFAULT_MS, async (ctx) => {
             if (!this.browser?.connected)
                 return [];
             await this.syncTabs(this.browser, ctx);
             return Promise.all(Array.from(this.tabs, ([id, page]) => this.info(id, page)));
-        });
+        }, signal);
     }
-    newTab(url, timeoutMs = DEFAULT_MS) {
+    newTab(url, timeoutMs = DEFAULT_MS, signal) {
         return this.enqueue(timeoutMs, async (ctx) => {
             const alreadyOpen = !!this.browser?.connected;
             const browser = await this.ensureBrowser(ctx);
@@ -337,25 +383,27 @@ export class BrowserSession {
                 }
                 throw err;
             }
-        });
+        }, signal);
     }
-    switchTab(id) {
+    switchTab(id, signal) {
         return this.enqueue(DEFAULT_MS, async (ctx) => {
             const p = await this.pageFor(id, ctx);
             await p.bringToFront();
             ctx.signal.throwIfAborted();
             this.active = id;
             return this.info(id, p);
-        });
+        }, signal);
     }
-    closeTab(id) {
+    closeTab(id, signal) {
         return this.enqueue(DEFAULT_MS, async (ctx) => {
             const p = await this.pageFor(id, ctx);
             await p.close();
-        });
+            if (this.browser?.connected)
+                await this.syncTabs(this.browser, ctx);
+        }, signal);
     }
-    closeBrowser() {
-        return this.enqueue(DEFAULT_MS, () => this.reset());
+    closeBrowser(signal) {
+        return this.enqueue(DEFAULT_MS, () => this.reset(), signal);
     }
     shutdown() {
         if (this.closing)
