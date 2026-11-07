@@ -1,200 +1,47 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
-import puppeteer from "puppeteer";
-const server = new Server({
-    name: "puppeteer-mcp",
-    version: "1.0.0",
-}, {
-    capabilities: {
-        tools: {},
-    },
+import { BrowserSession } from "./browser-session.js";
+import { createServer } from "./server.js";
+const session = new BrowserSession({
+    headless: process.env.PUPPETEER_MCP_HEADLESS === "true",
 });
-let browser = null;
-let page = null;
-async function getPage() {
-    if (!browser) {
-        browser = await puppeteer.launch({ headless: false });
-    }
-    if (!page) {
-        const pages = await browser.pages();
-        page = pages[0] || (await browser.newPage());
-    }
-    return page;
-}
-const TOOLS = [
-    {
-        name: "navigate",
-        description: "Navigates the browser to a specific URL.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                url: {
-                    type: "string",
-                    description: "The URL to navigate to.",
-                },
-            },
-            required: ["url"],
-        },
-    },
-    {
-        name: "click",
-        description: "Clicks on an element matching the given selector.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                selector: {
-                    type: "string",
-                    description: "The CSS selector to click on.",
-                },
-            },
-            required: ["selector"],
-        },
-    },
-    {
-        name: "type",
-        description: "Types text into an input field matching the given selector.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                selector: {
-                    type: "string",
-                    description: "The CSS selector for the input field.",
-                },
-                text: {
-                    type: "string",
-                    description: "The text to type.",
-                },
-            },
-            required: ["selector", "text"],
-        },
-    },
-    {
-        name: "get_content",
-        description: "Gets the outer HTML content of an element matching the given selector, or the entire page if no selector is provided.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                selector: {
-                    type: "string",
-                    description: "The CSS selector. If not provided, gets the whole page content.",
-                },
-            },
-        },
-    },
-    {
-        name: "evaluate",
-        description: "Evaluates JavaScript in the context of the page.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                script: {
-                    type: "string",
-                    description: "The JavaScript to evaluate. Must return a JSON-serializable value or a promise that resolves to one.",
-                },
-            },
-            required: ["script"],
-        },
-    },
-    {
-        name: "close_browser",
-        description: "Closes the browser instance.",
-        inputSchema: {
-            type: "object",
-            properties: {},
-        },
-    }
-];
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-        tools: TOOLS,
-    };
-});
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    try {
-        const { name, arguments: args } = request.params;
-        // Tools that don't need a page
-        if (name === "close_browser") {
-            if (browser) {
-                await browser.close();
-                browser = null;
-                page = null;
-                return {
-                    content: [{ type: "text", text: "Browser closed successfully." }],
-                };
-            }
-            return {
-                content: [{ type: "text", text: "Browser is already closed." }],
-            };
+const server = createServer(session);
+let stopping;
+function shutdown() {
+    return (stopping ??= Promise.resolve()
+        .then(async () => {
+        try {
+            await session.shutdown();
         }
-        const p = await getPage();
-        switch (name) {
-            case "navigate": {
-                const url = args.url;
-                await p.goto(url, { waitUntil: "networkidle2" });
-                return {
-                    content: [{ type: "text", text: `Navigated to ${url}` }],
-                };
-            }
-            case "click": {
-                const selector = args.selector;
-                await p.waitForSelector(selector);
-                await p.click(selector);
-                return {
-                    content: [{ type: "text", text: `Clicked element: ${selector}` }],
-                };
-            }
-            case "type": {
-                const { selector, text } = args;
-                await p.waitForSelector(selector);
-                await p.type(selector, text);
-                return {
-                    content: [{ type: "text", text: `Typed '${text}' into element: ${selector}` }],
-                };
-            }
-            case "get_content": {
-                const selector = args?.selector;
-                let content;
-                if (selector) {
-                    await p.waitForSelector(selector);
-                    content = await p.$eval(selector, (el) => el.outerHTML);
-                }
-                else {
-                    content = await p.content();
-                }
-                return {
-                    content: [{ type: "text", text: content }],
-                };
-            }
-            case "evaluate": {
-                const script = args.script;
-                const result = await p.evaluate(script);
-                return {
-                    content: [{ type: "text", text: JSON.stringify(result) }],
-                };
-            }
-            default:
-                throw new Error(`Unknown tool: ${name}`);
+        catch {
+            process.exitCode = 1;
+            console.error("Could not confirm browser cleanup.");
         }
-    }
-    catch (error) {
-        return {
-            isError: true,
-            content: [
-                {
-                    type: "text",
-                    text: `Error: ${error.message}`,
-                },
-            ],
-        };
-    }
-});
-async function main() {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Puppeteer MCP server running on stdio");
+        finally {
+            await server.close();
+        }
+    })
+        .catch(() => {
+        process.exitCode = 1;
+        console.error("Could not complete server shutdown.");
+    }));
 }
-main().catch((error) => {
-    console.error("Fatal error:", error);
-    process.exit(1);
+function fatal() {
+    process.exitCode = 1;
+    console.error("Unexpected server failure. Closing the owned browser.");
+    void shutdown();
+}
+process.once("uncaughtException", fatal);
+process.once("unhandledRejection", fatal);
+process.once("SIGINT", () => {
+    void shutdown();
 });
+process.once("SIGTERM", () => {
+    void shutdown();
+});
+process.stdin.once("end", () => {
+    void shutdown();
+});
+server.server.onclose = () => {
+    void shutdown();
+};
+server.connect(new StdioServerTransport()).catch(fatal);
