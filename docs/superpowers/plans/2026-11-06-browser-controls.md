@@ -12,7 +12,11 @@
 
 **Plain Version:** [Implementation plan in everyday language](2026-11-06-browser-controls-plain-version.md)
 
-**Status:** Proposed plan, not approved. Design approved on 2026-11-06; no dependencies installed, product code edited or tests run.
+**Status:** Approved 2026-11-06: user chose native implementation with independent final review. Implementation underway; dependency amendment A1 below approved.
+
+### A1 — Approved dependency amendment
+
+Baseline npm audit reported 18 vulnerable packages, including high-severity Puppeteer transitive dependencies. Its supported fix for Puppeteer is 25.16.0, a major upgrade; newest v24 is 24.43.1. Upgrade Puppeteer to ^25.16.0 and its bundled Chrome, update SDK within v1 to ^1.32.2 and Zod within v4 to a patched release (>=4.6.6), then verify all browser and stdio tests. Puppeteer 25.16.0 requires Node >=22.12.0, already covered by this plan's >=22.15.0 minimum. Keep all public tool contracts unchanged. Cost: internal API adjustments and a new browser download. This replaces the initial Puppeteer-24 version choice under explicit user approval of A1.
 
 ## Global Constraints
 

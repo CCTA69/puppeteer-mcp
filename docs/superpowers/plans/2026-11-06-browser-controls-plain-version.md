@@ -4,7 +4,11 @@ Upgrade the browser tool, test its failure cases, and hold back any ready-for-us
 
 [Technical Version](2026-11-06-browser-controls.md)
 
-You approved the design on 6 November 2026. This implementation plan now awaits your approval. No product code or tests have been written or run yet.
+You approved this plan on 6 November 2026, with implementation here and an independent final review. Work has started. You also approved the major browser library upgrade described below.
+
+### A1 — Approved dependency change
+
+The initial vulnerability check found 18 affected packages. Fixing the browser library's reported issues requires moving Puppeteer from version 24 to version 25.16.0 and downloading its newer Chrome. The Node version already chosen supports it. Also update the connection and argument-checking libraries within their current major versions. Keep the tool commands unchanged and run all planned tests against the new versions. This may require internal adjustments but adds no user-facing features or fees. You explicitly approved moving to Puppeteer 25.
 
 ## P1 — Check commands and keep existing tools working
 
