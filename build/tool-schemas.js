@@ -21,4 +21,7 @@ export const schemas = {
     evaluate: z.strictObject({ ...page, script: text, max_chars }),
     close_browser: z.strictObject({}),
     list_tabs: z.strictObject({}),
+    new_tab: z.strictObject({ url: urlSchema.optional(), timeout_ms: page.timeout_ms }),
+    switch_tab: z.strictObject({ tab_id: z.string().min(1).max(64) }),
+    close_tab: z.strictObject({ tab_id: z.string().min(1).max(64) }),
 };
